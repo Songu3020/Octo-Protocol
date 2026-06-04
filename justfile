@@ -40,9 +40,13 @@ db-up:
 db-down:
     docker compose down
 
-# Run database migrations (after store crate lands).
+# Run database migrations.
 migrate:
     sqlx migrate run --source crates/store/migrations
+
+# Drop & recreate the dev database schema (destructive — local only).
+db-reset:
+    docker exec -i octo-db psql -U octo -d octo -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
 
 # Run the server.
 run:

@@ -24,3 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the sealed seed, derives the key, builds **only** a Payment op (no raw-XDR signing oracle),
   signs, and zeroizes. 17 tests including non-positive-amount, bad-destination, and
   wrong-network-decryption negatives.
+- `octo-store`: Postgres schema (wallets, addresses, transactions, withdrawals, webhook
+  endpoints/deliveries, ingest cursor) and a sqlx `Store` API. Idempotent deposit recording
+  (unique `(tx_hash, operation_index)` → anti double-credit), idempotency-keyed withdrawals,
+  atomic row-locked muxed-id allocation, and a durable ingest cursor. Amounts are integer
+  stroops. 6 integration tests against Postgres.
