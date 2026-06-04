@@ -1,14 +1,39 @@
-//! Integration tests for octo-store. Require a running Postgres via `DATABASE_URL`.
+//! Integration tests for octo-store. Require a running Postgres.
 //!
 //! Run with: `docker compose up -d db` then `cargo test -p octo-store`.
-//! If `DATABASE_URL` is unset, the tests skip (so a DB-less `cargo test` still passes).
+//!
+//! `DATABASE_URL` is read from the workspace `.env` automatically (via dotenvy), so the plain
+//! `cargo test -p octo-store` works without exporting anything. If no URL can be found, the tests
+//! print a clear SKIPPED message and pass (so a DB-less `cargo test` of the whole workspace is
+//! green). If a URL is found but the DB is unreachable, the test fails loudly with the reason.
 
 use octo_store::{NewDeposit, NewWallet, NewWithdrawal, Store, StoreError};
+use std::sync::Once;
 use uuid::Uuid;
 
+static LOAD_ENV: Once = Once::new();
+
+/// Resolve `DATABASE_URL`, loading the workspace `.env` first. Returns `None` only if no URL is
+/// configured anywhere (in which case tests skip with a message).
+fn database_url() -> Option<String> {
+    LOAD_ENV.call_once(|| {
+        // Search upward from the crate dir for a .env (workspace root holds it).
+        let _ = dotenvy::dotenv();
+    });
+    std::env::var("DATABASE_URL").ok()
+}
+
 async fn store() -> Option<Store> {
-    let url = std::env::var("DATABASE_URL").ok()?;
-    let store = Store::connect(&url).await.expect("connect");
+    let Some(url) = database_url() else {
+        eprintln!(
+            "SKIPPED: DATABASE_URL is not set (no .env found). \
+             Run `docker compose up -d db` and ensure .env exists to run store tests."
+        );
+        return None;
+    };
+    let store = Store::connect(&url)
+        .await
+        .unwrap_or_else(|e| panic!("could not connect to {url}: {e}"));
     store.migrate().await.expect("migrate");
     Some(store)
 }
