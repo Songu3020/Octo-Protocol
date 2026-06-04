@@ -29,3 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (unique `(tx_hash, operation_index)` → anti double-credit), idempotency-keyed withdrawals,
   atomic row-locked muxed-id allocation, and a durable ingest cursor. Amounts are integer
   stroops. 6 integration tests against Postgres.
+- `octo-wallet-core`: `provision_wallet`/`import_wallet` tie mnemonic generation, account
+  derivation, and sealing into one call; `StellarNetwork::{as_str,parse}`.
+- `octo-api`: axum REST service with `POST /v1/wallets` (generate → seal → store, returns the
+  `G...` address + one-time recovery mnemonic), `GET /v1/wallets/:id`, and
+  `POST|GET /v1/wallets/:id/addresses` (returns both the muxed `M...` and the `G...`+memo_id
+  fallback). Standard `{statusCode,message,data}` envelope; errors never leak internals. 4
+  integration tests drive the real router (incl. a check that the stored seed is ciphertext, not
+  the plaintext mnemonic).

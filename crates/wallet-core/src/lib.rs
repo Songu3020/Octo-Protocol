@@ -18,11 +18,13 @@
 pub mod address;
 pub mod derive;
 mod error;
+pub mod provision;
 pub mod signer;
 
 pub use address::{decode_muxed, deposit_address, encode_muxed, DecodedMuxed, DepositAddress};
 pub use derive::WalletSeed;
 pub use error::WalletError;
+pub use provision::{import_wallet, provision_wallet, ProvisionedWallet};
 pub use signer::{
     account_id_from_sealed, sign_payment, PaymentRequest, SignedPayment, StellarNetwork,
 };

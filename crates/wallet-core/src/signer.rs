@@ -47,6 +47,23 @@ impl StellarNetwork {
             StellarNetwork::Testnet => b"octo:testnet",
         }
     }
+
+    /// The canonical lowercase name (`"mainnet"` / `"testnet"`) used in the DB and API.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StellarNetwork::Public => "mainnet",
+            StellarNetwork::Testnet => "testnet",
+        }
+    }
+
+    /// Parse from the canonical name. Accepts `mainnet`/`public` and `testnet`/`test`.
+    pub fn parse(s: &str) -> Option<StellarNetwork> {
+        match s {
+            "mainnet" | "public" => Some(StellarNetwork::Public),
+            "testnet" | "test" => Some(StellarNetwork::Testnet),
+            _ => None,
+        }
+    }
 }
 
 /// A single payment to build and sign from the master account.
