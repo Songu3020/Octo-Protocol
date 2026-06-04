@@ -17,6 +17,7 @@ tiny-bip39.workspace = true
 ed25519-dalek.workspace = true
 zeroize.workspace = true
 thiserror.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 hex.workspace = true

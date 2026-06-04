@@ -1393,6 +1393,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "octo-crypto",
+ "serde",
  "slip10_ed25519",
  "stellar-base",
  "stellar-strkey 0.0.16",

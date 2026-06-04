@@ -19,3 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plaintext/keys. Covered by 10 tests including tamper, wrong-key, and wrong-context negatives.
 - Security: `docs/threat-model.md`; deny `unwrap`/`expect`/`panic` and lossy casts in
   secret-handling crates; CI adds cargo-audit and gitleaks.
+- `octo-wallet-core`: SEP-0005 ed25519 derivation (`m/44'/148'/index'`, matches the official
+  vector), muxed (`M...`) + `G...`+memo deposit addresses, and a payment signing path that opens
+  the sealed seed, derives the key, builds **only** a Payment op (no raw-XDR signing oracle),
+  signs, and zeroizes. 17 tests including non-positive-amount, bad-destination, and
+  wrong-network-decryption negatives.
