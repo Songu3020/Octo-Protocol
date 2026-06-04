@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 mod error;
+pub mod horizon;
 mod json;
 pub mod routes;
 mod state;
@@ -21,6 +22,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/v1/wallets", post(routes::wallets::create_wallet))
         .route("/v1/wallets/:id", get(routes::wallets::get_wallet))
+        .route(
+            "/v1/wallets/:id/balances",
+            get(routes::wallets::get_balances),
+        )
         .route(
             "/v1/wallets/:id/addresses",
             post(routes::addresses::create_address).get(routes::addresses::list_addresses),

@@ -13,6 +13,10 @@ build:
 test:
     cargo test --workspace
 
+# Run live Stellar testnet tests (friendbot funding, balances) — hits the network.
+test-live:
+    OCTO_LIVE_TESTS=1 cargo test --workspace
+
 # Format the code.
 fmt:
     cargo fmt --all

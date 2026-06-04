@@ -29,6 +29,8 @@ pub struct CreateWalletResponse {
     pub address: String,
     /// One-time recovery mnemonic — store this securely; it will not be shown again.
     pub recovery_mnemonic: String,
+    /// Whether the account was funded on-chain (testnet friendbot). False on mainnet.
+    pub funded: bool,
 }
 
 /// Public wallet view (no secrets).
@@ -63,14 +65,35 @@ pub async fn create_wallet(
         })
         .await?;
 
+    // On testnet, fund the new account via friendbot so it exists on-chain. Best-effort: a
+    // funding failure does not roll back wallet creation (the account can be funded later), but we
+    // record whether it succeeded so the caller knows.
+    let funded = match state.friendbot_url() {
+        Some(fb) => crate::horizon::friendbot_fund(fb, &wallet.stellar_account_g)
+            .await
+            .is_ok(),
+        None => false,
+    };
+
     let resp = CreateWalletResponse {
         id: wallet.id,
         network: wallet.network,
         address: wallet.stellar_account_g,
         recovery_mnemonic: provisioned.mnemonic.to_string(),
+        funded,
     };
     let (status, json) = Envelope::created(resp);
     Ok((status, json))
+}
+
+/// `GET /v1/wallets/{id}/balances` — live on-chain balances from Horizon.
+pub async fn get_balances(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Envelope<Vec<crate::horizon::Balance>>>> {
+    let wallet = state.store().get_wallet(id).await?;
+    let balances = state.horizon().balances(&wallet.stellar_account_g).await?;
+    Ok(Envelope::ok(balances))
 }
 
 /// `GET /v1/wallets/{id}`

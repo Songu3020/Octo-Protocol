@@ -1,6 +1,7 @@
 //! Shared application state: DB handle, master key, network, and Horizon config.
 
 use crate::error::ApiError;
+use crate::horizon::Horizon;
 use base64::Engine;
 use octo_crypto::{master_key_from_slice, MASTER_KEY_LEN};
 use octo_store::Store;
@@ -19,6 +20,7 @@ struct Inner {
     /// AES-256 master key used to seal/open seeds. Held zeroized.
     master_key: Zeroizing<[u8; MASTER_KEY_LEN]>,
     network: StellarNetwork,
+    horizon: Horizon,
     horizon_url: String,
     friendbot_url: Option<String>,
 }
@@ -32,11 +34,13 @@ impl AppState {
         horizon_url: String,
         friendbot_url: Option<String>,
     ) -> Self {
+        let horizon = Horizon::new(horizon_url.clone());
         Self {
             inner: Arc::new(Inner {
                 store,
                 master_key: Zeroizing::new(master_key),
                 network,
+                horizon,
                 horizon_url,
                 friendbot_url,
             }),
@@ -62,6 +66,10 @@ impl AppState {
 
     pub fn network(&self) -> StellarNetwork {
         self.inner.network
+    }
+
+    pub fn horizon(&self) -> &Horizon {
+        &self.inner.horizon
     }
 
     pub fn horizon_url(&self) -> &str {

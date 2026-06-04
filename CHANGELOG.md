@@ -37,3 +37,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fallback). Standard `{statusCode,message,data}` envelope; errors never leak internals. 4
   integration tests drive the real router (incl. a check that the stored seed is ciphertext, not
   the plaintext mnemonic).
+- `octo-api`: friendbot funding of new testnet accounts on wallet creation (`funded` flag), a
+  `GET /v1/wallets/:id/balances` endpoint backed by a thin Horizon client, and a live testnet
+  integration test (gated by `OCTO_LIVE_TESTS=1`) proving real on-chain funding + balance reads.
