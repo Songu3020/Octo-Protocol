@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(BIND_ADDR=127.0.0.1:8097 cargo run -p octo-server)",
+      "Bash(pkill -f octo-server)",
+      "Bash(git commit -q -m ' *)"
+    ]
+  }
+}

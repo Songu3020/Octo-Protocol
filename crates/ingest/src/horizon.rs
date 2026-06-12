@@ -115,6 +115,12 @@ impl HorizonPayments {
             .send()
             .await
             .map_err(|_| HorizonError::Request)?;
+
+        // A 404 means the account does not exist on-chain yet (e.g. a wallet created but not yet
+        // funded). That is not an error for ingestion — there simply are no payments to process.
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(Vec::new());
+        }
         if !resp.status().is_success() {
             return Err(HorizonError::Request);
         }
