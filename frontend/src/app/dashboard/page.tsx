@@ -119,12 +119,7 @@ function WalletCard({ wallet }: { wallet: WalletView }) {
             </p>
           </div>
         </div>
-        <Link
-          href={`/dashboard/wallets/${wallet.id}`}
-          className="rounded-lg border border-white/15 px-3 py-1.5 text-xs text-foreground hover:border-white/30"
-        >
-          Manage
-        </Link>
+        <ManageMenu walletId={wallet.id} />
       </div>
 
       <div className="mt-5 h-px bg-white/10" />
@@ -145,6 +140,45 @@ function WalletCard({ wallet }: { wallet: WalletView }) {
           <p className="mt-1 font-medium text-foreground">XLM</p>
         </div>
       </div>
+    </div>
+  );
+}
+
+function ManageMenu({ walletId }: { walletId: string }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 rounded-lg border border-white/15 px-3 py-1.5 text-xs text-foreground hover:border-white/30"
+      >
+        Manage <span className="text-muted">⋮</span>
+      </button>
+
+      {open && (
+        <>
+          {/* click-away */}
+          <div
+            className="fixed inset-0 z-10"
+            onClick={() => setOpen(false)}
+          />
+          <div className="absolute right-0 z-20 mt-2 w-44 overflow-hidden rounded-xl border border-white/10 bg-black/90 backdrop-blur-md">
+            <Link
+              href={`/dashboard/wallets/${walletId}`}
+              className="flex items-center gap-2 px-4 py-3 text-sm text-foreground hover:bg-white/5"
+            >
+              ▦ Go to dashboard
+            </Link>
+            <Link
+              href={`/dashboard/wallets/${walletId}/api`}
+              className="flex items-center gap-2 px-4 py-3 text-sm text-foreground hover:bg-white/5"
+            >
+              ↗ API settings
+            </Link>
+          </div>
+        </>
+      )}
     </div>
   );
 }

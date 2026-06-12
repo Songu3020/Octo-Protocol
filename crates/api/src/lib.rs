@@ -42,6 +42,10 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::wallets::get_balances),
         )
         .route(
+            "/v1/wallets/:id/transactions",
+            get(routes::wallets::list_transactions),
+        )
+        .route(
             "/v1/wallets/:id/addresses",
             post(routes::addresses::create_address).get(routes::addresses::list_addresses),
         )

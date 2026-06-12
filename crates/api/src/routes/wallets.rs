@@ -106,6 +106,21 @@ pub async fn get_balances(
     Ok(Envelope::ok(balances))
 }
 
+/// `GET /v1/wallets/{id}/transactions` — recorded deposits/withdrawals for a wallet.
+pub async fn list_transactions(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Envelope<Vec<octo_store::Transaction>>>> {
+    // Confirm the wallet exists (404 otherwise).
+    let _ = state.store().get_wallet(id).await?;
+    let txns = state
+        .store()
+        .list_transactions(id)
+        .await
+        .map_err(|_| ApiError::Internal)?;
+    Ok(Envelope::ok(txns))
+}
+
 fn to_view(w: octo_store::Wallet) -> WalletView {
     WalletView {
         id: w.id,

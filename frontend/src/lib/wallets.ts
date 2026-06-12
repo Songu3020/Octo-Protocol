@@ -27,6 +27,27 @@ export type Balance = {
   asset_issuer?: string | null;
 };
 
+export type Address = {
+  id: string;
+  customer_ref: string | null;
+  muxed_address: string;
+  base_address: string;
+  memo_id: number;
+  metadata: unknown;
+};
+
+export type Transaction = {
+  id: string;
+  direction: string;
+  asset_code: string;
+  amount_stroops: number;
+  source_account: string | null;
+  destination_account: string | null;
+  stellar_tx_hash: string | null;
+  status: string;
+  created_at: string;
+};
+
 /** Create a master wallet. The server picks the network; name/description optional. */
 export function createWallet(
   token: string,
@@ -55,3 +76,29 @@ export function getWallet(token: string, id: string) {
 export function getBalances(token: string, id: string) {
   return apiFetch<Balance[]>(`/v1/wallets/${id}/balances`, { token });
 }
+
+export function listAddresses(token: string, id: string) {
+  return apiFetch<Address[]>(`/v1/wallets/${id}/addresses`, { token });
+}
+
+export function createAddress(
+  token: string,
+  id: string,
+  customerRef?: string,
+) {
+  return apiFetch<Address>(`/v1/wallets/${id}/addresses`, {
+    method: "POST",
+    token,
+    body: JSON.stringify({ customer_ref: customerRef || null }),
+  });
+}
+
+export function listTransactions(token: string, id: string) {
+  return apiFetch<Transaction[]>(`/v1/wallets/${id}/transactions`, { token });
+}
+
+/** Format integer stroops as a decimal XLM-style string (7 dp). */
+export function stroopsToAmount(stroops: number): string {
+  return (stroops / 10_000_000).toFixed(7);
+}
+

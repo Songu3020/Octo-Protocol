@@ -189,6 +189,37 @@ async fn addresses_return_both_forms_and_share_base() {
 }
 
 #[tokio::test]
+async fn transactions_endpoint_returns_list() {
+    let Some(state) = test_state().await else {
+        return;
+    };
+    let app = build_router(state);
+    let token = auth_token(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(post_auth("/v1/wallets", &token))
+        .await
+        .unwrap();
+    let wallet_id = body_json(resp).await["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // A new wallet has no transactions yet → empty array, 200.
+    let uri = format!("/v1/wallets/{wallet_id}/transactions");
+    let resp = app.clone().oneshot(get(&uri)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert_eq!(j["data"].as_array().unwrap().len(), 0);
+
+    // Unknown wallet → 404.
+    let uri = format!("/v1/wallets/{}/transactions", uuid::Uuid::new_v4());
+    let resp = app.oneshot(get(&uri)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn get_unknown_wallet_is_404() {
     let Some(state) = test_state().await else {
         return;

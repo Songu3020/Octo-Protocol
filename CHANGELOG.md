@@ -80,3 +80,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Master Wallets at a glance" with wallet cards, and a "New master wallet" form (network, name,
   description) that creates a wallet and reveals the 12-word recovery phrase once. Verified
   end-to-end against the running backend (signup → create → list, with 401 when unauthenticated).
+- Wallet detail / Overview: new `GET /v1/wallets/:id/transactions` endpoint; the wallet card's
+  **Manage** dropdown ("Go to dashboard" / "API settings"); a wallet-scoped sidebar
+  (Overview/Assets/Transactions/Addresses) and an Overview page showing the wallet header, balance
+  stat cards, an action row (New address / Refresh balances wired; Deposit/Withdraw stubbed),
+  Assets, Addresses, and recent transactions — all fed by the real balances/addresses/transactions
+  endpoints. "New address" creates a muxed address live. Verified via integration tests + curl.
