@@ -182,6 +182,143 @@ pub fn sign_payment(
     })
 }
 
+/// Request parameters for wrapping a user's signed transaction in a FeeBumpTransaction.
+pub struct FeeBumpRequest<'a> {
+    /// Base64-encoded signed `TransactionEnvelope` from the user. Must be a v1 (`Tx`) envelope.
+    pub inner_xdr: &'a str,
+    /// Maximum base fee (in stroops) the sponsor is willing to pay for the fee-bump.
+    pub max_base_fee_stroops: i64,
+}
+
+/// Wrap a user's already-signed `TransactionEnvelope` in a `FeeBumpTransaction` signed by the
+/// master wallet as fee source, then return the signed outer envelope XDR.
+///
+/// Security: the seed is decrypted, the signing key is derived, and both are zeroized on drop —
+/// the same contract as `sign_payment`. The caller is responsible for validating the inner XDR
+/// (operation-type allowlist, self-sponsorship guard) before calling this function.
+pub fn sign_fee_bump(
+    master_key: &[u8; MASTER_KEY_LEN],
+    sealed: &SealedSeed,
+    network: StellarNetwork,
+    account_index: u32,
+    req: &FeeBumpRequest<'_>,
+) -> Result<SignedPayment, WalletError> {
+    use sha2::{Digest, Sha256};
+    use stellar_base::xdr::{
+        BytesM, DecoratedSignature, FeeBumpTransaction as XdrFeeBump,
+        FeeBumpTransactionEnvelope, FeeBumpTransactionExt, FeeBumpTransactionInnerTx, Hash,
+        MuxedAccount, Signature, SignatureHint, TransactionEnvelope,
+        TransactionSignaturePayload, TransactionSignaturePayloadTaggedTransaction, Uint256, VecM,
+        XDRDeserialize, XDRSerialize,
+    };
+
+    // Parse and validate the inner XDR — must be a v1 TransactionEnvelope.
+    let inner_env = TransactionEnvelope::from_xdr_base64(req.inner_xdr)
+        .map_err(|_| WalletError::InvalidXdr)?;
+    let inner_v1 = match inner_env {
+        TransactionEnvelope::Tx(v1) => v1,
+        _ => return Err(WalletError::InvalidXdr),
+    };
+
+    // Derive the signing key for the fee source (decrypt → derive → zeroize on drop).
+    let seed_bytes = open(master_key, sealed, network.crypto_context())?;
+    let seed = WalletSeed::from_bytes(seed_bytes.to_vec());
+    let secret = seed.derive_ed25519_secret(account_index);
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&*secret);
+
+    let pk_bytes: [u8; 32] = signing_key.verifying_key().to_bytes();
+    let source_account = stellar_strkey::ed25519::PublicKey(pk_bytes).to_string();
+
+    // Build the fee-bump transaction (without signatures yet).
+    let fee_bump_tx = XdrFeeBump {
+        fee_source: MuxedAccount::Ed25519(Uint256(pk_bytes)),
+        fee: req.max_base_fee_stroops,
+        inner_tx: FeeBumpTransactionInnerTx::Tx(inner_v1),
+        ext: FeeBumpTransactionExt::V0,
+    };
+
+    // Compute the signing hash: sha256(XDR(TransactionSignaturePayload)).
+    let network_id_bytes = network.to_base().network_id();
+    let network_hash: [u8; 32] = network_id_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| WalletError::Signing)?;
+
+    let sig_payload = TransactionSignaturePayload {
+        network_id: Hash(network_hash),
+        tagged_transaction: TransactionSignaturePayloadTaggedTransaction::TxFeeBump(
+            fee_bump_tx.clone(),
+        ),
+    };
+    let payload_xdr = sig_payload.xdr_bytes().map_err(|_| WalletError::Signing)?;
+    let hash: [u8; 32] = Sha256::digest(&payload_xdr).into();
+
+    // Sign the hash with ed25519 (signing_key zeroized on drop).
+    use ed25519_dalek::Signer as _;
+    let signature: ed25519_dalek::Signature = signing_key.sign(&hash);
+    let sig_bytes: [u8; 64] = signature.to_bytes();
+
+    // Build the decorated signature (hint = last 4 bytes of the public key).
+    let hint_bytes: [u8; 4] = pk_bytes[28..32]
+        .try_into()
+        .map_err(|_| WalletError::Signing)?;
+    let decorated = DecoratedSignature {
+        hint: SignatureHint(hint_bytes),
+        signature: Signature(
+            BytesM::<64>::try_from(sig_bytes.to_vec()).map_err(|_| WalletError::Signing)?,
+        ),
+    };
+
+    // Assemble the fee-bump envelope and serialize.
+    let sigs: VecM<DecoratedSignature, 20> =
+        vec![decorated].try_into().map_err(|_| WalletError::Signing)?;
+    let fee_bump_envelope = FeeBumpTransactionEnvelope {
+        tx: fee_bump_tx,
+        signatures: sigs,
+    };
+    let envelope_xdr = TransactionEnvelope::TxFeeBump(fee_bump_envelope)
+        .xdr_base64()
+        .map_err(|_| WalletError::Signing)?;
+
+    Ok(SignedPayment {
+        envelope_xdr,
+        source_account,
+    })
+}
+
+/// Compute the Stellar transaction hash (sha256 of the signing payload) for the inner transaction
+/// in a fee-bump flow. This is the standard txID that would appear in Horizon/explorers.
+pub fn compute_inner_tx_hash(
+    inner_xdr: &str,
+    network: StellarNetwork,
+) -> Result<[u8; 32], WalletError> {
+    use sha2::{Digest, Sha256};
+    use stellar_base::xdr::{
+        Hash, TransactionEnvelope, TransactionSignaturePayload,
+        TransactionSignaturePayloadTaggedTransaction, XDRDeserialize, XDRSerialize,
+    };
+
+    let inner_env = TransactionEnvelope::from_xdr_base64(inner_xdr)
+        .map_err(|_| WalletError::InvalidXdr)?;
+    let inner_tx = match inner_env {
+        TransactionEnvelope::Tx(v1) => v1.tx,
+        _ => return Err(WalletError::InvalidXdr),
+    };
+
+    let network_id_bytes = network.to_base().network_id();
+    let network_hash: [u8; 32] = network_id_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| WalletError::Signing)?;
+
+    let sig_payload = TransactionSignaturePayload {
+        network_id: Hash(network_hash),
+        tagged_transaction: TransactionSignaturePayloadTaggedTransaction::Tx(inner_tx),
+    };
+    let payload_xdr = sig_payload.xdr_bytes().map_err(|_| WalletError::Signing)?;
+    Ok(Sha256::digest(&payload_xdr).into())
+}
+
 /// Parse a destination that may be a `G...` account or an `M...` muxed address.
 fn parse_destination(dest: &str) -> Result<stellar_base::crypto::MuxedAccount, WalletError> {
     if let Ok(mux) = MuxedEd25519PublicKey::from_account_id(dest) {
@@ -296,6 +433,111 @@ mod tests {
             sign_payment(&mk, &sealed, StellarNetwork::Testnet, 0, &req),
             Err(WalletError::SeedDecryption)
         ));
+    }
+
+    #[test]
+    fn sign_fee_bump_produces_valid_outer_envelope() {
+        let (mk, sealed) = sealed_vector_seed(StellarNetwork::Testnet);
+        // Create a valid inner signed payment to wrap.
+        let inner_req = PaymentRequest {
+            destination: DEST,
+            stroops: 100,
+            asset: None,
+            memo_id: None,
+            sequence: 1,
+        };
+        let inner = sign_payment(&mk, &sealed, StellarNetwork::Testnet, 0, &inner_req).unwrap();
+
+        let req = FeeBumpRequest {
+            inner_xdr: &inner.envelope_xdr,
+            max_base_fee_stroops: 200,
+        };
+        let result = sign_fee_bump(&mk, &sealed, StellarNetwork::Testnet, 0, &req).unwrap();
+        assert_eq!(result.source_account, MASTER_ACCOUNT_0);
+
+        // Round-trip parse the outer envelope and verify structure.
+        use stellar_base::xdr::{TransactionEnvelope, XDRDeserialize};
+        let env = TransactionEnvelope::from_xdr_base64(&result.envelope_xdr)
+            .expect("signed fee-bump envelope must be valid XDR");
+        match env {
+            TransactionEnvelope::TxFeeBump(e) => {
+                assert_eq!(e.signatures.len(), 1, "outer envelope must carry exactly one signature");
+                // Inner signatures must be preserved.
+                match e.tx.inner_tx {
+                    stellar_base::xdr::FeeBumpTransactionInnerTx::Tx(v1) => {
+                        assert_eq!(v1.signatures.len(), 1, "inner signatures must be preserved");
+                    }
+                }
+            }
+            _ => panic!("expected TxFeeBump envelope variant"),
+        }
+    }
+
+    #[test]
+    fn sign_fee_bump_rejects_invalid_xdr() {
+        let (mk, sealed) = sealed_vector_seed(StellarNetwork::Testnet);
+        let req = FeeBumpRequest {
+            inner_xdr: "this-is-not-valid-base64-xdr",
+            max_base_fee_stroops: 200,
+        };
+        assert!(matches!(
+            sign_fee_bump(&mk, &sealed, StellarNetwork::Testnet, 0, &req),
+            Err(WalletError::InvalidXdr)
+        ));
+    }
+
+    #[test]
+    fn sign_fee_bump_wrong_network_cannot_open_seed() {
+        // Build a valid inner XDR using the testnet-sealed seed.
+        let (mk, testnet_sealed) = sealed_vector_seed(StellarNetwork::Testnet);
+        let inner = sign_payment(
+            &mk,
+            &testnet_sealed,
+            StellarNetwork::Testnet,
+            0,
+            &PaymentRequest {
+                destination: DEST,
+                stroops: 1,
+                asset: None,
+                memo_id: None,
+                sequence: 1,
+            },
+        )
+        .unwrap();
+
+        // Seal the same seed for mainnet; trying to open it as testnet must fail (AAD mismatch).
+        let (mk2, mainnet_sealed) = sealed_vector_seed(StellarNetwork::Public);
+        let req = FeeBumpRequest {
+            inner_xdr: &inner.envelope_xdr,
+            max_base_fee_stroops: 200,
+        };
+        assert!(matches!(
+            sign_fee_bump(&mk2, &mainnet_sealed, StellarNetwork::Testnet, 0, &req),
+            Err(WalletError::SeedDecryption)
+        ));
+    }
+
+    #[test]
+    fn compute_inner_tx_hash_is_deterministic() {
+        let (mk, sealed) = sealed_vector_seed(StellarNetwork::Testnet);
+        let inner = sign_payment(
+            &mk,
+            &sealed,
+            StellarNetwork::Testnet,
+            0,
+            &PaymentRequest {
+                destination: DEST,
+                stroops: 100,
+                asset: None,
+                memo_id: None,
+                sequence: 5,
+            },
+        )
+        .unwrap();
+        let h1 = compute_inner_tx_hash(&inner.envelope_xdr, StellarNetwork::Testnet).unwrap();
+        let h2 = compute_inner_tx_hash(&inner.envelope_xdr, StellarNetwork::Testnet).unwrap();
+        assert_eq!(h1, h2, "hash must be deterministic");
+        assert_ne!(h1, [0u8; 32], "hash must not be all zeros");
     }
 
     #[test]

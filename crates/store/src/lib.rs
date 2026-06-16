@@ -17,7 +17,8 @@ mod models;
 
 pub use error::StoreError;
 pub use models::{
-    Address, ApiKey, AuditLog, NewDeposit, Transaction, User, Wallet, WebhookEndpoint, Withdrawal,
+    Address, ApiKey, AuditLog, GasSponsorshipConfig, NewDeposit, NewSponsoredTx,
+    SponsoredTransaction, Transaction, User, Wallet, WebhookEndpoint, Withdrawal,
 };
 
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -523,6 +524,88 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
+    }
+
+    // --- gas sponsorship --------------------------------------------------
+
+    /// Read the gas sponsorship config for a wallet, if one exists.
+    pub async fn get_gas_sponsorship_config(
+        &self,
+        wallet_id: Uuid,
+    ) -> Result<Option<GasSponsorshipConfig>, StoreError> {
+        let row = sqlx::query_as::<_, GasSponsorshipConfig>(
+            "SELECT * FROM gas_sponsorship_configs WHERE wallet_id = $1",
+        )
+        .bind(wallet_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Insert a new sponsorship attempt with status `pending`. Returns the new row.
+    ///
+    /// Returns [`StoreError::Conflict`] if `inner_tx_hash` has already been sponsored (the unique
+    /// constraint on `inner_tx_hash` fires), preventing double-sponsoring.
+    pub async fn record_sponsored_tx(
+        &self,
+        new: NewSponsoredTx<'_>,
+    ) -> Result<SponsoredTransaction, StoreError> {
+        sqlx::query_as::<_, SponsoredTransaction>(
+            r#"
+            INSERT INTO sponsored_transactions (wallet_id, inner_tx_hash, fee_stroops)
+            VALUES ($1, $2, $3)
+            RETURNING *
+            "#,
+        )
+        .bind(new.wallet_id)
+        .bind(new.inner_tx_hash)
+        .bind(new.fee_stroops)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(StoreError::from_sqlx_conflict)
+    }
+
+    /// Update a sponsored transaction's status and optional outcome fields after Horizon submission.
+    pub async fn update_sponsored_tx_status(
+        &self,
+        id: Uuid,
+        status: &str,
+        fee_bump_tx_hash: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            r#"
+            UPDATE sponsored_transactions
+            SET status = $2, fee_bump_tx_hash = $3, error = $4
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .bind(status)
+        .bind(fee_bump_tx_hash)
+        .bind(error)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Sum the `fee_stroops` of all **confirmed** sponsorships for `wallet_id` in the current UTC
+    /// day. Returns `0` when no confirmed rows exist. Used for daily-budget enforcement.
+    pub async fn sum_sponsored_fees_today(&self, wallet_id: Uuid) -> Result<i64, StoreError> {
+        let total: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COALESCE(SUM(fee_stroops), 0)
+            FROM sponsored_transactions
+            WHERE wallet_id = $1
+              AND status = 'confirmed'
+              AND date_trunc('day', created_at AT TIME ZONE 'UTC') =
+                  date_trunc('day', now() AT TIME ZONE 'UTC')
+            "#,
+        )
+        .bind(wallet_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(total)
     }
 
     /// Record a webhook delivery attempt (audit log). Returns the delivery id.

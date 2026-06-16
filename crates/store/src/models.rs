@@ -123,6 +123,45 @@ pub struct ApiKey {
     pub created_at: DateTime<Utc>,
 }
 
+/// Gas sponsorship configuration for a wallet.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct GasSponsorshipConfig {
+    pub wallet_id: Uuid,
+    pub enabled: bool,
+    /// Maximum fee (stroops) the sponsor pays per transaction. `None` means no cap.
+    pub per_tx_fee_cap_stroops: Option<i64>,
+    /// Rolling daily budget (stroops). `None` means no budget limit.
+    pub daily_budget_stroops: Option<i64>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A record of a single fee-bump sponsorship attempt.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct SponsoredTransaction {
+    pub id: Uuid,
+    pub wallet_id: Uuid,
+    /// Stellar transaction hash (txID) of the user's inner transaction.
+    pub inner_tx_hash: String,
+    /// Hash of the outer fee-bump transaction; `None` if submission failed before a hash was known.
+    pub fee_bump_tx_hash: Option<String>,
+    /// Actual fee charged to the sponsor in stroops.
+    pub fee_stroops: i64,
+    /// `pending` → `confirmed` or `failed`.
+    pub status: String,
+    /// Horizon error detail on failure (server-side only, never returned to callers).
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Input for recording a new sponsorship attempt.
+#[derive(Debug, Clone)]
+pub struct NewSponsoredTx<'a> {
+    pub wallet_id: Uuid,
+    pub inner_tx_hash: &'a str,
+    pub fee_stroops: i64,
+}
+
 /// A new deposit to record (input to the idempotent insert).
 #[derive(Debug, Clone)]
 pub struct NewDeposit {

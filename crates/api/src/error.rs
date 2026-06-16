@@ -19,10 +19,14 @@ pub enum ApiError {
     BadRequest(String),
     /// 401 — missing or invalid authentication.
     Unauthorized,
+    /// 403 — the request is valid but the server refuses to act on it (e.g. sponsorship disabled).
+    Forbidden(String),
     /// 404 — resource not found.
     NotFound,
     /// 409 — conflict (e.g. duplicate idempotency key / already exists).
     Conflict,
+    /// 429 — rate limit or budget exceeded.
+    TooManyRequests(String),
     /// 500 — an internal error. The detail is logged, never returned to the client.
     Internal,
 }
@@ -32,8 +36,10 @@ impl ApiError {
         match self {
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m.clone()),
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
+            ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, m.clone()),
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not found".into()),
             ApiError::Conflict => (StatusCode::CONFLICT, "already exists".into()),
+            ApiError::TooManyRequests(m) => (StatusCode::TOO_MANY_REQUESTS, m.clone()),
             ApiError::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal server error".into(),
@@ -74,7 +80,8 @@ impl From<octo_wallet_core::WalletError> for ApiError {
             W::InvalidMnemonic
             | W::InvalidAddress
             | W::InvalidAmount
-            | W::InvalidDerivationPath => ApiError::BadRequest("invalid input".into()),
+            | W::InvalidDerivationPath
+            | W::InvalidXdr => ApiError::BadRequest("invalid input".into()),
             W::KeyDerivation | W::Signing | W::SeedDecryption => ApiError::Internal,
         }
     }

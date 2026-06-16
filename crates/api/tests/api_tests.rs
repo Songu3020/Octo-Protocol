@@ -602,6 +602,145 @@ async fn api_key_cannot_withdraw() {
     );
 }
 
+/// Insert a `gas_sponsorship_configs` row for `wallet_id` with no limits.
+async fn insert_sponsorship_config(state: &AppState, wallet_id: &str) {
+    sqlx::query(
+        "INSERT INTO gas_sponsorship_configs (wallet_id, enabled) VALUES ($1::uuid, true)",
+    )
+    .bind(wallet_id)
+    .execute(state.store().pool())
+    .await
+    .expect("insert gas sponsorship config");
+}
+
+#[tokio::test]
+async fn sponsor_returns_401_without_auth() {
+    let Some(state) = test_state().await else {
+        return;
+    };
+    let app = build_router(state);
+    let token = auth_token(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(post_auth("/v1/wallets", &token))
+        .await
+        .unwrap();
+    let wallet_id = body_json(resp).await["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // No bearer token → 401.
+    let uri = format!("/v1/wallets/{wallet_id}/sponsor");
+    let resp = app.oneshot(post(&uri)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn sponsor_returns_403_when_not_configured() {
+    let Some(state) = test_state().await else {
+        return;
+    };
+    let app = build_router(state);
+    let token = auth_token(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(post_auth("/v1/wallets", &token))
+        .await
+        .unwrap();
+    let wallet_id = body_json(resp).await["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // No gas_sponsorship_configs row → 403.
+    let uri = format!("/v1/wallets/{wallet_id}/sponsor");
+    let body = r#"{"transaction_xdr":"AAAA","max_base_fee_stroops":200}"#;
+    let resp = app
+        .oneshot(post_json_auth(&uri, body, &token))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "missing config must return 403"
+    );
+}
+
+#[tokio::test]
+async fn sponsor_returns_400_on_missing_fields() {
+    let Some(state) = test_state().await else {
+        return;
+    };
+    let app = build_router(state.clone());
+    let token = auth_token(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(post_auth("/v1/wallets", &token))
+        .await
+        .unwrap();
+    let wallet_id = body_json(resp).await["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    insert_sponsorship_config(&state, &wallet_id).await;
+    let uri = format!("/v1/wallets/{wallet_id}/sponsor");
+
+    // Empty body → 400 (missing required fields).
+    let resp = app
+        .clone()
+        .oneshot(post_json_auth(&uri, "{}", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // Missing max_base_fee_stroops → 400.
+    let resp = app
+        .oneshot(post_json_auth(
+            &uri,
+            r#"{"transaction_xdr":"AAAA"}"#,
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn sponsor_returns_400_on_bad_xdr() {
+    let Some(state) = test_state().await else {
+        return;
+    };
+    let app = build_router(state.clone());
+    let token = auth_token(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(post_auth("/v1/wallets", &token))
+        .await
+        .unwrap();
+    let wallet_id = body_json(resp).await["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    insert_sponsorship_config(&state, &wallet_id).await;
+
+    let uri = format!("/v1/wallets/{wallet_id}/sponsor");
+    let body = r#"{"transaction_xdr":"this-is-not-xdr!!!","max_base_fee_stroops":200}"#;
+    let resp = app
+        .oneshot(post_json_auth(&uri, body, &token))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "invalid XDR must return 400"
+    );
+}
+
 #[tokio::test]
 async fn audit_logs_record_and_list() {
     let Some(state) = test_state().await else {
