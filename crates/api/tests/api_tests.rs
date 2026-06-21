@@ -658,3 +658,46 @@ async fn audit_logs_record_and_list() {
     assert!(!arr.is_empty());
     assert!(arr.iter().all(|l| l["category"] == "wallet"));
 }
+
+#[tokio::test]
+async fn sponsor_returns_429_when_budget_exhausted() {
+    let Some(state) = test_state().await else {
+        return;
+    };
+    let app = build_router(state);
+    let token = auth_token(&app).await;
+    let resp = app
+        .clone()
+        .oneshot(post_auth("/v1/wallets", &token))
+        .await
+        .unwrap();
+    let wallet_id = body_json(resp).await["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let uri = format!("/v1/wallets/{wallet_id}/sponsor");
+
+    // Budget of 100 stroops permits exactly one 100-stroop sponsorship.
+    let mk_body = || {
+        format!(
+            r#"{{"inner_tx_hash":"{}","fee_stroops":100,"daily_budget_stroops":100}}"#,
+            uuid::Uuid::new_v4()
+        )
+    };
+
+    let first = app
+        .clone()
+        .oneshot(post_json_auth(&uri, &mk_body(), &token))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::CREATED, "first request fits");
+
+    // A second, distinct request with no budget left must 429, not silently overspend.
+    let second = app
+        .oneshot(post_json_auth(&uri, &mk_body(), &token))
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = body_json(second).await;
+    assert_eq!(body["message"], "budget_exceeded");
+}

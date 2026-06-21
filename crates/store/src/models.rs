@@ -79,6 +79,20 @@ pub struct Withdrawal {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A sponsored (fee-bumped) transaction — an immutable audit-trail row and the source of truth for
+/// atomic daily-budget enforcement. All monetary fields are `i64` stroops.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct SponsoredTransaction {
+    pub id: Uuid,
+    pub wallet_id: Uuid,
+    /// Hash of the user's inner transaction (unique — prevents double-sponsoring).
+    pub inner_tx_hash: String,
+    /// Fee reserved/charged against the daily budget, in stroops.
+    pub fee_stroops: i64,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+}
+
 /// A dashboard user.
 #[derive(Debug, Clone, FromRow)]
 pub struct User {

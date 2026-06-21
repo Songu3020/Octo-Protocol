@@ -21,6 +21,11 @@ pub enum StoreError {
     /// A requested row was not found.
     #[error("not found")]
     NotFound,
+
+    /// The daily sponsorship budget would be exceeded by this request (the conditional insert
+    /// matched no row). Callers map this to `429 Too Many Requests`.
+    #[error("daily sponsorship budget exceeded")]
+    BudgetExceeded,
 }
 
 impl StoreError {

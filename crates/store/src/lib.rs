@@ -1,7 +1,7 @@
 //! Postgres persistence for octo (sqlx).
 //!
 //! Tables: `wallets`, `addresses`, `transactions`, `withdrawals`, `webhook_endpoints`,
-//! `webhook_deliveries`, `ingest_cursor` — see `migrations/0001_init.sql`.
+//! `webhook_deliveries`, `ingest_cursor`, `sponsored_transactions` — see `migrations/`.
 //!
 //! Security-relevant guarantees implemented here (see `docs/threat-model.md`):
 //! - All queries are parameterized (no string-built SQL) → no SQL injection.
@@ -10,6 +10,9 @@
 //! - [`Store::record_deposit`] is **idempotent** on the immutable `(tx_hash, operation_index)`
 //!   unique index, so a replayed/reorged Horizon event cannot double-credit.
 //! - [`Store::create_withdrawal`] is idempotent on `(wallet_id, idempotency_key)`.
+//! - [`Store::record_sponsored_tx_if_budget_available`] checks and reserves the daily sponsorship
+//!   budget in a single conditional-insert statement, so concurrent sponsor requests can't both
+//!   read the same "budget available" snapshot and jointly overrun it (TOCTOU-safe).
 #![forbid(unsafe_code)]
 
 mod error;
@@ -17,7 +20,8 @@ mod models;
 
 pub use error::StoreError;
 pub use models::{
-    Address, ApiKey, AuditLog, NewDeposit, Transaction, User, Wallet, WebhookEndpoint, Withdrawal,
+    Address, ApiKey, AuditLog, NewDeposit, SponsoredTransaction, Transaction, User, Wallet,
+    WebhookEndpoint, Withdrawal,
 };
 
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -455,6 +459,70 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    // --- sponsored transactions (gas sponsorship) --------------------------
+
+    /// Atomically check the daily sponsorship budget and reserve it — replaces the TOCTOU-prone
+    /// "read sum, compare, then insert" pattern. The budget is computed over rows that are not
+    /// `failed` for the wallet's current UTC day: a `pending` row reserves budget the instant it's
+    /// inserted, and a later `failed` update releases that reservation.
+    ///
+    /// A plain `INSERT ... SELECT ... WHERE <budget check>` is **not** by itself race-free: under
+    /// Postgres's default `READ COMMITTED` isolation, the `SUM` in the CTE takes no lock, so two
+    /// concurrent statements for the same wallet can both read "0 spent so far" and both insert,
+    /// jointly overrunning the budget (caught by `concurrent_sponsor_requests_cannot_exceed_daily_budget`,
+    /// which failed against an earlier, lock-free version of this query). To make the check+insert
+    /// truly atomic we serialize attempts per wallet with `pg_advisory_xact_lock`: unlike a plain
+    /// `pg_advisory_lock`, the `_xact` variant is released automatically at `COMMIT`/`ROLLBACK` (and
+    /// thus also if the connection drops), so it carries none of the "leaked lock" risk of a
+    /// session-held advisory lock.
+    ///
+    /// Returns `Ok(None)` when the insert matched no row — either the budget would be exceeded, or
+    /// `inner_tx_hash` was already recorded (idempotent no-op via `ON CONFLICT DO NOTHING`). Callers
+    /// map `Ok(None)` to `StoreError::BudgetExceeded` / HTTP 429.
+    pub async fn record_sponsored_tx_if_budget_available(
+        &self,
+        wallet_id: Uuid,
+        inner_tx_hash: &str,
+        fee_stroops: i64,
+        daily_budget_stroops: i64,
+    ) -> Result<Option<SponsoredTransaction>, StoreError> {
+        let mut tx = self.pool.begin().await?;
+
+        // Serializes per-wallet so the budget snapshot below can't be read twice before either
+        // insert commits. Auto-released at commit/rollback (see doc comment above).
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))")
+            .bind(wallet_id)
+            .execute(&mut *tx)
+            .await?;
+
+        let row = sqlx::query_as::<_, SponsoredTransaction>(
+            r#"
+            WITH budget_check AS (
+                SELECT COALESCE(SUM(fee_stroops), 0) AS spent_today
+                FROM sponsored_transactions
+                WHERE wallet_id = $1
+                  AND status <> 'failed'
+                  AND date_trunc('day', created_at) = date_trunc('day', now())
+            )
+            INSERT INTO sponsored_transactions (wallet_id, inner_tx_hash, fee_stroops, status)
+            SELECT $1, $2, $3, 'pending'
+            FROM budget_check
+            WHERE spent_today + $3 <= $4
+            ON CONFLICT (inner_tx_hash) DO NOTHING
+            RETURNING *
+            "#,
+        )
+        .bind(wallet_id)
+        .bind(inner_tx_hash)
+        .bind(fee_stroops)
+        .bind(daily_budget_stroops)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(row)
     }
 
     // --- ingest cursor ----------------------------------------------------
