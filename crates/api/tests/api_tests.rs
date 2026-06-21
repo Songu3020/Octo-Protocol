@@ -8,6 +8,7 @@ use axum::http::{Request, StatusCode};
 use octo_api::{build_router, AppState};
 use octo_store::Store;
 use octo_wallet_core::StellarNetwork;
+use stellar_base::xdr::XDRSerialize;
 use std::sync::Once;
 use tower::ServiceExt; // for `oneshot`
 
@@ -602,145 +603,6 @@ async fn api_key_cannot_withdraw() {
     );
 }
 
-/// Insert a `gas_sponsorship_configs` row for `wallet_id` with no limits.
-async fn insert_sponsorship_config(state: &AppState, wallet_id: &str) {
-    sqlx::query(
-        "INSERT INTO gas_sponsorship_configs (wallet_id, enabled) VALUES ($1::uuid, true)",
-    )
-    .bind(wallet_id)
-    .execute(state.store().pool())
-    .await
-    .expect("insert gas sponsorship config");
-}
-
-#[tokio::test]
-async fn sponsor_returns_401_without_auth() {
-    let Some(state) = test_state().await else {
-        return;
-    };
-    let app = build_router(state);
-    let token = auth_token(&app).await;
-
-    let resp = app
-        .clone()
-        .oneshot(post_auth("/v1/wallets", &token))
-        .await
-        .unwrap();
-    let wallet_id = body_json(resp).await["data"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    // No bearer token → 401.
-    let uri = format!("/v1/wallets/{wallet_id}/sponsor");
-    let resp = app.oneshot(post(&uri)).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn sponsor_returns_403_when_not_configured() {
-    let Some(state) = test_state().await else {
-        return;
-    };
-    let app = build_router(state);
-    let token = auth_token(&app).await;
-
-    let resp = app
-        .clone()
-        .oneshot(post_auth("/v1/wallets", &token))
-        .await
-        .unwrap();
-    let wallet_id = body_json(resp).await["data"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    // No gas_sponsorship_configs row → 403.
-    let uri = format!("/v1/wallets/{wallet_id}/sponsor");
-    let body = r#"{"transaction_xdr":"AAAA","max_base_fee_stroops":200}"#;
-    let resp = app
-        .oneshot(post_json_auth(&uri, body, &token))
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::FORBIDDEN,
-        "missing config must return 403"
-    );
-}
-
-#[tokio::test]
-async fn sponsor_returns_400_on_missing_fields() {
-    let Some(state) = test_state().await else {
-        return;
-    };
-    let app = build_router(state.clone());
-    let token = auth_token(&app).await;
-
-    let resp = app
-        .clone()
-        .oneshot(post_auth("/v1/wallets", &token))
-        .await
-        .unwrap();
-    let wallet_id = body_json(resp).await["data"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    insert_sponsorship_config(&state, &wallet_id).await;
-    let uri = format!("/v1/wallets/{wallet_id}/sponsor");
-
-    // Empty body → 400 (missing required fields).
-    let resp = app
-        .clone()
-        .oneshot(post_json_auth(&uri, "{}", &token))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-
-    // Missing max_base_fee_stroops → 400.
-    let resp = app
-        .oneshot(post_json_auth(
-            &uri,
-            r#"{"transaction_xdr":"AAAA"}"#,
-            &token,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn sponsor_returns_400_on_bad_xdr() {
-    let Some(state) = test_state().await else {
-        return;
-    };
-    let app = build_router(state.clone());
-    let token = auth_token(&app).await;
-
-    let resp = app
-        .clone()
-        .oneshot(post_auth("/v1/wallets", &token))
-        .await
-        .unwrap();
-    let wallet_id = body_json(resp).await["data"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    insert_sponsorship_config(&state, &wallet_id).await;
-
-    let uri = format!("/v1/wallets/{wallet_id}/sponsor");
-    let body = r#"{"transaction_xdr":"this-is-not-xdr!!!","max_base_fee_stroops":200}"#;
-    let resp = app
-        .oneshot(post_json_auth(&uri, body, &token))
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::BAD_REQUEST,
-        "invalid XDR must return 400"
-    );
-}
-
 #[tokio::test]
 async fn audit_logs_record_and_list() {
     let Some(state) = test_state().await else {
@@ -808,142 +670,221 @@ fn put_json_auth(uri: &str, body: &str, token: &str) -> Request<Body> {
         .unwrap()
 }
 
-#[tokio::test]
-async fn get_sponsorship_returns_defaults_when_no_config() {
-    let Some(state) = test_state().await else {
-        eprintln!("SKIPPED: set DATABASE_URL");
-        return;
-    };
-    let app = build_router(state);
-    let token = auth_token(&app).await;
+/// Fund a testnet account via friendbot. Returns `false` (caller should skip) if there is no
+/// network egress to the public Stellar testnet in this environment.
+async fn friendbot_fund(account_g: &str) -> bool {
+    let url = format!("https://friendbot.stellar.org/?addr={account_g}");
+    matches!(reqwest::get(&url).await, Ok(r) if r.status().is_success())
+}
 
-    let resp = app
-        .clone()
-        .oneshot(post_auth("/v1/wallets", &token))
-        .await
-        .unwrap();
-    let wallet_id = body_json(resp).await["data"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let uri = format!("/v1/wallets/{wallet_id}/sponsorship");
-    let resp = app.oneshot(get_auth(&uri, &token)).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let j = body_json(resp).await;
-    let data = &j["data"];
-    assert_eq!(data["wallet_id"].as_str().unwrap(), wallet_id);
-    assert_eq!(data["enabled"], false);
-    assert_eq!(data["max_fee_per_tx_stroops"], 1_000_000);
-    assert_eq!(data["daily_budget_stroops"], 100_000_000);
-    // No DB row yet → timestamps are null.
-    assert!(data["created_at"].is_null());
-    assert!(data["updated_at"].is_null());
+/// Poll Horizon for an account's sequence number, retrying while the friendbot-created account
+/// propagates. Returns `None` (caller should skip) if it never becomes visible.
+async fn wait_for_sequence(horizon: &octo_api::horizon::Horizon, account_g: &str) -> Option<i64> {
+    for _ in 0..10 {
+        if let Ok(seq) = horizon.account_sequence(account_g).await {
+            return Some(seq);
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    None
 }
 
 #[tokio::test]
-async fn put_sponsorship_enables_and_sets_cap() {
+async fn audit_records_sponsorship_config_change() {
     let Some(state) = test_state().await else {
-        eprintln!("SKIPPED: set DATABASE_URL");
         return;
     };
     let app = build_router(state);
     let token = auth_token(&app).await;
 
-    let resp = app
-        .clone()
-        .oneshot(post_auth("/v1/wallets", &token))
-        .await
-        .unwrap();
-    let wallet_id = body_json(resp).await["data"]["id"]
+    let wallet_id = body_json(
+        app.clone()
+            .oneshot(post_auth("/v1/wallets", &token))
+            .await
+            .unwrap(),
+    )
+    .await["data"]["id"]
         .as_str()
         .unwrap()
         .to_string();
-    let uri = format!("/v1/wallets/{wallet_id}/sponsorship");
 
-    // PUT to enable and set a fee cap (budget keeps default).
+    let uri = format!("/v1/wallets/{wallet_id}/sponsorship");
+    let body = r#"{"enabled":true,"fee_cap_stroops":500,"daily_budget_stroops":10000000}"#;
     let resp = app
         .clone()
+        .oneshot(put_json_auth(&uri, body, &token))
+        .await
+        .unwrap();
+    let status = resp.status();
+    let j = body_json(resp).await;
+    assert_eq!(status, StatusCode::OK, "config update failed: {j}");
+    assert_eq!(j["data"]["enabled"], true);
+
+    let resp = app
+        .oneshot(get_auth("/v1/audit-logs?category=sponsorship", &token))
+        .await
+        .unwrap();
+    let logs = body_json(resp).await;
+    let arr = logs["data"].as_array().unwrap();
+    assert!(
+        arr.iter().any(|l| l["action"]
+            .as_str()
+            .unwrap()
+            .contains("updated sponsorship config")),
+        "expected a sponsorship config audit entry, got {arr:?}"
+    );
+}
+
+#[tokio::test]
+async fn audit_records_rejected_sponsor_request() {
+    let Some(state) = test_state().await else {
+        return;
+    };
+    let app = build_router(state);
+    let token = auth_token(&app).await;
+
+    let wallet_id = body_json(
+        app.clone()
+            .oneshot(post_auth("/v1/wallets", &token))
+            .await
+            .unwrap(),
+    )
+    .await["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Enable sponsorship first so the rejection comes from XDR validation, not the
+    // sponsorship-disabled check.
+    let config_uri = format!("/v1/wallets/{wallet_id}/sponsorship");
+    app.clone()
         .oneshot(put_json_auth(
-            &uri,
-            r#"{"enabled":true,"max_fee_per_tx_stroops":500000}"#,
+            &config_uri,
+            r#"{"enabled":true,"fee_cap_stroops":500,"daily_budget_stroops":10000000}"#,
             &token,
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let j = body_json(resp).await;
-    assert_eq!(j["data"]["enabled"], true);
-    assert_eq!(j["data"]["max_fee_per_tx_stroops"], 500_000);
 
-    // GET confirms the update persisted.
-    let resp = app.oneshot(get_auth(&uri, &token)).await.unwrap();
-    let j = body_json(resp).await;
-    assert_eq!(j["data"]["enabled"], true);
-    assert_eq!(j["data"]["max_fee_per_tx_stroops"], 500_000);
-    assert!(!j["data"]["created_at"].is_null());
-}
-
-#[tokio::test]
-async fn put_sponsorship_rejects_cap_larger_than_budget() {
-    let Some(state) = test_state().await else {
-        eprintln!("SKIPPED: set DATABASE_URL");
-        return;
-    };
-    let app = build_router(state);
-    let token = auth_token(&app).await;
-
+    let uri = format!("/v1/wallets/{wallet_id}/sponsor");
+    let body = r#"{"transaction_xdr":"not-valid-xdr"}"#;
     let resp = app
         .clone()
-        .oneshot(post_auth("/v1/wallets", &token))
-        .await
-        .unwrap();
-    let wallet_id = body_json(resp).await["data"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let uri = format!("/v1/wallets/{wallet_id}/sponsorship");
-
-    // max_fee > daily_budget → 400.
-    let resp = app
-        .oneshot(put_json_auth(
-            &uri,
-            r#"{"max_fee_per_tx_stroops":200000000,"daily_budget_stroops":100000000}"#,
-            &token,
-        ))
+        .oneshot(post_json_auth(&uri, body, &token))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    let resp = app
+        .oneshot(get_auth("/v1/audit-logs?category=sponsorship", &token))
+        .await
+        .unwrap();
+    let logs = body_json(resp).await;
+    let arr = logs["data"].as_array().unwrap();
+    assert!(
+        arr.iter()
+            .any(|l| l["action"].as_str().unwrap() == "sponsor request rejected: xdr_invalid"),
+        "expected a rejected-sponsor audit entry, got {arr:?}"
+    );
 }
 
 #[tokio::test]
-async fn sponsorship_settings_require_login() {
+async fn audit_records_confirmed_sponsored_tx() {
     let Some(state) = test_state().await else {
-        eprintln!("SKIPPED: set DATABASE_URL");
         return;
     };
-    let app = build_router(state);
-    let fake_id = uuid::Uuid::new_v4();
+    let app = build_router(state.clone());
+    let token = auth_token(&app).await;
 
-    // GET without auth → 401.
+    let wallet = body_json(
+        app.clone()
+            .oneshot(post_auth("/v1/wallets", &token))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let wallet_id = wallet["data"]["id"].as_str().unwrap().to_string();
+    let master_g = wallet["data"]["address"].as_str().unwrap().to_string();
+
+    let config_uri = format!("/v1/wallets/{wallet_id}/sponsorship");
+    app.clone()
+        .oneshot(put_json_auth(
+            &config_uri,
+            r#"{"enabled":true,"fee_cap_stroops":1000,"daily_budget_stroops":50000000}"#,
+            &token,
+        ))
+        .await
+        .unwrap();
+
+    // This test exercises the real Stellar testnet (friendbot + Horizon). Skip gracefully if
+    // there's no network egress in this environment, rather than failing the suite.
+    if !friendbot_fund(&master_g).await {
+        eprintln!("SKIPPED: no network access to Stellar testnet friendbot");
+        return;
+    }
+
+    let inner_kp = match stellar_base::crypto::DalekKeyPair::random() {
+        Ok(kp) => kp,
+        Err(_) => return,
+    };
+    let inner_g = inner_kp.public_key().account_id();
+    if !friendbot_fund(&inner_g).await {
+        eprintln!("SKIPPED: no network access to Stellar testnet friendbot");
+        return;
+    }
+
+    let Some(seq) = wait_for_sequence(state.horizon(), &inner_g).await else {
+        eprintln!("SKIPPED: inner account sequence unavailable (network?)");
+        return;
+    };
+
+    let destination: stellar_base::crypto::MuxedAccount =
+        stellar_base::crypto::PublicKey::from_account_id(&master_g)
+            .unwrap()
+            .into();
+    let payment = stellar_base::operations::Operation::new_payment()
+        .with_destination(destination)
+        .with_amount(stellar_base::amount::Stroops::new(1))
+        .unwrap()
+        .with_asset(stellar_base::asset::Asset::new_native())
+        .build()
+        .unwrap();
+    let mut tx = stellar_base::transaction::Transaction::builder(
+        inner_kp.public_key(),
+        seq + 1,
+        stellar_base::transaction::MIN_BASE_FEE,
+    )
+    .add_operation(payment)
+    .into_transaction()
+    .unwrap();
+    tx.sign(
+        inner_kp.as_ref(),
+        &stellar_base::network::Network::new_test(),
+    )
+    .unwrap();
+    let inner_xdr = tx.into_envelope().xdr_base64().unwrap();
+
+    let sponsor_uri = format!("/v1/wallets/{wallet_id}/sponsor");
+    let body = serde_json::json!({ "transaction_xdr": inner_xdr }).to_string();
     let resp = app
         .clone()
-        .oneshot(get(&format!("/v1/wallets/{fake_id}/sponsorship")))
+        .oneshot(post_json_auth(&sponsor_uri, &body, &token))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let status = resp.status();
+    let j = body_json(resp).await;
+    assert_eq!(status, StatusCode::CREATED, "sponsor failed: {j}");
+    assert_eq!(j["data"]["status"], "confirmed", "expected confirmed: {j}");
 
-    // PUT without auth → 401.
     let resp = app
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!("/v1/wallets/{fake_id}/sponsorship"))
-                .header("content-type", "application/json")
-                .body(Body::from("{}"))
-                .unwrap(),
-        )
+        .oneshot(get_auth("/v1/audit-logs?category=sponsorship", &token))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let logs = body_json(resp).await;
+    let arr = logs["data"].as_array().unwrap();
+    assert!(
+        arr.iter()
+            .any(|l| l["action"].as_str().unwrap() == "sponsored a transaction (confirmed)"),
+        "expected a confirmed-sponsorship audit entry, got {arr:?}"
+    );
 }

@@ -33,7 +33,7 @@ pub enum StellarNetwork {
 }
 
 impl StellarNetwork {
-    fn to_base(self) -> Network {
+    pub(crate) fn to_base(self) -> Network {
         match self {
             StellarNetwork::Public => Network::new_public(),
             StellarNetwork::Testnet => Network::new_test(),
@@ -91,7 +91,7 @@ pub struct SignedPayment {
 
 /// Open a sealed seed for `network`, derive Stellar account `account_index`, and return its
 /// `DalekKeyPair`. The decrypted seed is zeroized as it leaves scope.
-fn keypair_from_sealed(
+pub(crate) fn keypair_from_sealed(
     master_key: &[u8; MASTER_KEY_LEN],
     sealed: &SealedSeed,
     network: StellarNetwork,

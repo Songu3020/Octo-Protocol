@@ -1,7 +1,7 @@
 //! Postgres persistence for octo (sqlx).
 //!
 //! Tables: `wallets`, `addresses`, `transactions`, `withdrawals`, `webhook_endpoints`,
-//! `webhook_deliveries`, `ingest_cursor`, `sponsored_transactions` — see `migrations/`.
+//! `webhook_deliveries`, `ingest_cursor` — see `migrations/0001_init.sql`.
 //!
 //! Security-relevant guarantees implemented here (see `docs/threat-model.md`):
 //! - All queries are parameterized (no string-built SQL) → no SQL injection.
@@ -17,8 +17,8 @@ mod models;
 
 pub use error::StoreError;
 pub use models::{
-    Address, ApiKey, AuditLog, NewDeposit, SponsorshipConfig, Transaction, User, Wallet,
-    WebhookEndpoint, Withdrawal,
+    Address, ApiKey, AuditLog, GasSponsorshipConfig, NewDeposit, SponsoredTransaction, Transaction,
+    User, Wallet, WebhookEndpoint, Withdrawal,
 };
 
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -458,69 +458,117 @@ impl Store {
         Ok(())
     }
 
-    // --- sponsored transactions (gas sponsorship) -------------------------
+    // --- gas sponsorship ----------------------------------------------------
 
-    /// Record a sponsored (fee-bumped) transaction. Idempotent on `inner_tx_hash`: a second
-    /// attempt to sponsor the same inner transaction returns [`StoreError::Conflict`] (enforced by
-    /// the unique index), so the master wallet can never double-sponsor.
-    pub async fn record_sponsored_tx(
+    /// Fetch a wallet's sponsorship config, if one has been set.
+    pub async fn get_sponsorship_config(
         &self,
-        new: NewSponsoredTx<'_>,
-    ) -> Result<SponsoredTransaction, StoreError> {
-        sqlx::query_as::<_, SponsoredTransaction>(
+        wallet_id: Uuid,
+    ) -> Result<Option<GasSponsorshipConfig>, StoreError> {
+        let row = sqlx::query_as::<_, GasSponsorshipConfig>(
+            "SELECT * FROM gas_sponsorship_configs WHERE wallet_id = $1",
+        )
+        .bind(wallet_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Create or replace a wallet's sponsorship config (enable/disable, fee cap, daily budget).
+    /// Does not touch `spent_today_stroops` / `budget_date`.
+    pub async fn upsert_sponsorship_config(
+        &self,
+        wallet_id: Uuid,
+        enabled: bool,
+        fee_cap_stroops: i64,
+        daily_budget_stroops: i64,
+    ) -> Result<GasSponsorshipConfig, StoreError> {
+        sqlx::query_as::<_, GasSponsorshipConfig>(
             r#"
-            INSERT INTO sponsored_transactions
-                (wallet_id, inner_tx_hash, fee_bump_tx_hash, fee_stroops)
+            INSERT INTO gas_sponsorship_configs
+                (wallet_id, enabled, fee_cap_stroops, daily_budget_stroops)
             VALUES ($1, $2, $3, $4)
+            ON CONFLICT (wallet_id)
+            DO UPDATE SET enabled = EXCLUDED.enabled,
+                          fee_cap_stroops = EXCLUDED.fee_cap_stroops,
+                          daily_budget_stroops = EXCLUDED.daily_budget_stroops,
+                          updated_at = now()
             RETURNING *
             "#,
         )
-        .bind(new.wallet_id)
-        .bind(new.inner_tx_hash)
-        .bind(new.fee_bump_tx_hash)
-        .bind(new.fee_stroops)
+        .bind(wallet_id)
+        .bind(enabled)
+        .bind(fee_cap_stroops)
+        .bind(daily_budget_stroops)
         .fetch_one(&self.pool)
         .await
-        .map_err(StoreError::from_sqlx_conflict)
+        .map_err(StoreError::Database)
     }
 
-    /// Update a sponsored transaction's status after submission/confirmation, optionally setting the
-    /// outer fee-bump hash and a Horizon error detail.
-    pub async fn update_sponsored_tx_status(
+    /// Atomically reserve `fee_stroops` of a wallet's daily sponsorship budget, resetting the
+    /// counter first if the stored `budget_date` has rolled over. Returns `None` (no row
+    /// changed) if sponsorship is disabled, unconfigured, or the reservation would exceed the
+    /// daily budget — the caller treats that as a rejection.
+    pub async fn try_reserve_sponsorship_budget(
         &self,
-        id: Uuid,
-        status: &str,
-        fee_bump_tx_hash: Option<&str>,
-        error: Option<&str>,
-    ) -> Result<(), StoreError> {
-        sqlx::query(
-            "UPDATE sponsored_transactions
-             SET status = $2, fee_bump_tx_hash = $3, error = $4
-             WHERE id = $1",
-        )
-        .bind(id)
-        .bind(status)
-        .bind(fee_bump_tx_hash)
-        .bind(error)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    /// Sum the confirmed sponsorship fees for `wallet_id` for the current UTC day. Returns 0 (not
-    /// NULL) when there are no matching rows. Used by the API layer to enforce the daily budget.
-    pub async fn sum_sponsored_fees_today(&self, wallet_id: Uuid) -> Result<i64, StoreError> {
-        let total: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(fee_stroops), 0)::BIGINT
-             FROM sponsored_transactions
-             WHERE wallet_id = $1
-               AND status = 'confirmed'
-               AND date_trunc('day', created_at) = date_trunc('day', now())",
+        wallet_id: Uuid,
+        fee_stroops: i64,
+    ) -> Result<Option<GasSponsorshipConfig>, StoreError> {
+        let row = sqlx::query_as::<_, GasSponsorshipConfig>(
+            r#"
+            UPDATE gas_sponsorship_configs
+            SET spent_today_stroops = CASE WHEN budget_date = CURRENT_DATE
+                                           THEN spent_today_stroops + $2
+                                           ELSE $2 END,
+                budget_date = CURRENT_DATE,
+                updated_at = now()
+            WHERE wallet_id = $1
+              AND enabled = true
+              AND (CASE WHEN budget_date = CURRENT_DATE THEN spent_today_stroops + $2 ELSE $2 END)
+                    <= daily_budget_stroops
+            RETURNING *
+            "#,
         )
         .bind(wallet_id)
-        .fetch_one(&self.pool)
+        .bind(fee_stroops)
+        .fetch_optional(&self.pool)
         .await?;
-        Ok(total)
+        Ok(row)
+    }
+
+    /// Idempotently record a sponsored transaction outcome. Returns `Ok(None)` if this inner tx
+    /// hash was already recorded for the wallet (duplicate submission — benign no-op).
+    pub async fn create_sponsored_transaction(
+        &self,
+        wallet_id: Uuid,
+        inner_tx_hash: &str,
+        fee_stroops: i64,
+        status: &str,
+        stellar_tx_hash: Option<&str>,
+    ) -> Result<Option<SponsoredTransaction>, StoreError> {
+        let result = sqlx::query_as::<_, SponsoredTransaction>(
+            r#"
+            INSERT INTO sponsored_transactions
+                (wallet_id, inner_tx_hash, fee_stroops, status, stellar_tx_hash)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING *
+            "#,
+        )
+        .bind(wallet_id)
+        .bind(inner_tx_hash)
+        .bind(fee_stroops)
+        .bind(status)
+        .bind(stellar_tx_hash)
+        .fetch_one(&self.pool)
+        .await;
+
+        match result {
+            Ok(tx) => Ok(Some(tx)),
+            Err(e) => match StoreError::from_sqlx_conflict(e) {
+                StoreError::Conflict => Ok(None),
+                other => Err(other),
+            },
+        }
     }
 
     // --- ingest cursor ----------------------------------------------------
@@ -551,56 +599,6 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(())
-    }
-
-    // --- gas sponsorship configs ------------------------------------------
-
-    /// Fetch the sponsorship config for a wallet, if one exists.
-    pub async fn get_sponsorship_config(
-        &self,
-        wallet_id: Uuid,
-    ) -> Result<Option<SponsorshipConfig>, StoreError> {
-        let row = sqlx::query_as::<_, SponsorshipConfig>(
-            "SELECT wallet_id, enabled, max_fee_per_tx_stroops, daily_budget_stroops,
-                    created_at, updated_at
-             FROM gas_sponsorship_configs WHERE wallet_id = $1",
-        )
-        .bind(wallet_id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row)
-    }
-
-    /// Create or update the sponsorship config for a wallet.
-    pub async fn upsert_sponsorship_config(
-        &self,
-        wallet_id: Uuid,
-        enabled: bool,
-        max_fee_per_tx_stroops: i64,
-        daily_budget_stroops: i64,
-    ) -> Result<SponsorshipConfig, StoreError> {
-        sqlx::query_as::<_, SponsorshipConfig>(
-            r#"
-            INSERT INTO gas_sponsorship_configs
-                (wallet_id, enabled, max_fee_per_tx_stroops, daily_budget_stroops)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (wallet_id)
-            DO UPDATE SET
-                enabled                = EXCLUDED.enabled,
-                max_fee_per_tx_stroops = EXCLUDED.max_fee_per_tx_stroops,
-                daily_budget_stroops   = EXCLUDED.daily_budget_stroops,
-                updated_at             = now()
-            RETURNING wallet_id, enabled, max_fee_per_tx_stroops, daily_budget_stroops,
-                      created_at, updated_at
-            "#,
-        )
-        .bind(wallet_id)
-        .bind(enabled)
-        .bind(max_fee_per_tx_stroops)
-        .bind(daily_budget_stroops)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(StoreError::Database)
     }
 
     // --- webhooks ---------------------------------------------------------
@@ -639,49 +637,6 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
-    }
-
-    // --- gas sponsorship configs ------------------------------------------
-
-    /// Upsert the gas sponsorship config for a wallet (insert or update on wallet_id conflict).
-    pub async fn upsert_sponsorship_config(
-        &self,
-        cfg: NewSponsorshipConfig,
-    ) -> Result<GasSponsorshipConfig, StoreError> {
-        sqlx::query_as::<_, GasSponsorshipConfig>(
-            r#"
-            INSERT INTO gas_sponsorship_configs
-                (wallet_id, enabled, max_fee_per_tx_stroops, daily_budget_stroops)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (wallet_id) DO UPDATE
-                SET enabled                = EXCLUDED.enabled,
-                    max_fee_per_tx_stroops = EXCLUDED.max_fee_per_tx_stroops,
-                    daily_budget_stroops   = EXCLUDED.daily_budget_stroops,
-                    updated_at             = now()
-            RETURNING *
-            "#,
-        )
-        .bind(cfg.wallet_id)
-        .bind(cfg.enabled)
-        .bind(cfg.max_fee_per_tx_stroops)
-        .bind(cfg.daily_budget_stroops)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(StoreError::Database)
-    }
-
-    /// Fetch the gas sponsorship config for a wallet, if one has been set.
-    pub async fn get_sponsorship_config(
-        &self,
-        wallet_id: Uuid,
-    ) -> Result<Option<GasSponsorshipConfig>, StoreError> {
-        let row = sqlx::query_as::<_, GasSponsorshipConfig>(
-            "SELECT * FROM gas_sponsorship_configs WHERE wallet_id = $1",
-        )
-        .bind(wallet_id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row)
     }
 
     /// Record a webhook delivery attempt (audit log). Returns the delivery id.

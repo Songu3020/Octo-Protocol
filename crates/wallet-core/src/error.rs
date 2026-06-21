@@ -36,9 +36,14 @@ pub enum WalletError {
     #[error("seed decryption failed")]
     SeedDecryption,
 
-    /// A supplied XDR string could not be parsed as a valid TransactionEnvelope.
-    #[error("invalid XDR")]
+    /// The supplied transaction XDR could not be parsed, or used an unsupported envelope shape
+    /// (e.g. a fee-bump wrapping another fee-bump).
+    #[error("invalid transaction XDR")]
     InvalidXdr,
+
+    /// An operation in the inner transaction is outside the sponsor allowlist.
+    #[error("operation type not allowed for sponsorship")]
+    OperationNotAllowed,
 }
 
 impl From<octo_crypto::CryptoError> for WalletError {
