@@ -205,16 +205,15 @@ pub fn sign_fee_bump(
 ) -> Result<SignedPayment, WalletError> {
     use sha2::{Digest, Sha256};
     use stellar_base::xdr::{
-        BytesM, DecoratedSignature, FeeBumpTransaction as XdrFeeBump,
-        FeeBumpTransactionEnvelope, FeeBumpTransactionExt, FeeBumpTransactionInnerTx, Hash,
-        MuxedAccount, Signature, SignatureHint, TransactionEnvelope,
-        TransactionSignaturePayload, TransactionSignaturePayloadTaggedTransaction, Uint256, VecM,
-        XDRDeserialize, XDRSerialize,
+        BytesM, DecoratedSignature, FeeBumpTransaction as XdrFeeBump, FeeBumpTransactionEnvelope,
+        FeeBumpTransactionExt, FeeBumpTransactionInnerTx, Hash, MuxedAccount, Signature,
+        SignatureHint, TransactionEnvelope, TransactionSignaturePayload,
+        TransactionSignaturePayloadTaggedTransaction, Uint256, VecM, XDRDeserialize, XDRSerialize,
     };
 
     // Parse and validate the inner XDR — must be a v1 TransactionEnvelope.
-    let inner_env = TransactionEnvelope::from_xdr_base64(req.inner_xdr)
-        .map_err(|_| WalletError::InvalidXdr)?;
+    let inner_env =
+        TransactionEnvelope::from_xdr_base64(req.inner_xdr).map_err(|_| WalletError::InvalidXdr)?;
     let inner_v1 = match inner_env {
         TransactionEnvelope::Tx(v1) => v1,
         _ => return Err(WalletError::InvalidXdr),
@@ -224,10 +223,10 @@ pub fn sign_fee_bump(
     let seed_bytes = open(master_key, sealed, network.crypto_context())?;
     let seed = WalletSeed::from_bytes(seed_bytes.to_vec());
     let secret = seed.derive_ed25519_secret(account_index);
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(&*secret);
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&secret);
 
     let pk_bytes: [u8; 32] = signing_key.verifying_key().to_bytes();
-    let source_account = stellar_strkey::ed25519::PublicKey(pk_bytes).to_string();
+    let source_account = format!("{}", stellar_strkey::ed25519::PublicKey(pk_bytes));
 
     // Build the fee-bump transaction (without signatures yet).
     let fee_bump_tx = XdrFeeBump {
@@ -270,8 +269,9 @@ pub fn sign_fee_bump(
     };
 
     // Assemble the fee-bump envelope and serialize.
-    let sigs: VecM<DecoratedSignature, 20> =
-        vec![decorated].try_into().map_err(|_| WalletError::Signing)?;
+    let sigs: VecM<DecoratedSignature, 20> = vec![decorated]
+        .try_into()
+        .map_err(|_| WalletError::Signing)?;
     let fee_bump_envelope = FeeBumpTransactionEnvelope {
         tx: fee_bump_tx,
         signatures: sigs,
@@ -298,8 +298,8 @@ pub fn compute_inner_tx_hash(
         TransactionSignaturePayloadTaggedTransaction, XDRDeserialize, XDRSerialize,
     };
 
-    let inner_env = TransactionEnvelope::from_xdr_base64(inner_xdr)
-        .map_err(|_| WalletError::InvalidXdr)?;
+    let inner_env =
+        TransactionEnvelope::from_xdr_base64(inner_xdr).map_err(|_| WalletError::InvalidXdr)?;
     let inner_tx = match inner_env {
         TransactionEnvelope::Tx(v1) => v1.tx,
         _ => return Err(WalletError::InvalidXdr),
@@ -461,7 +461,11 @@ mod tests {
             .expect("signed fee-bump envelope must be valid XDR");
         match env {
             TransactionEnvelope::TxFeeBump(e) => {
-                assert_eq!(e.signatures.len(), 1, "outer envelope must carry exactly one signature");
+                assert_eq!(
+                    e.signatures.len(),
+                    1,
+                    "outer envelope must carry exactly one signature"
+                );
                 // Inner signatures must be preserved.
                 match e.tx.inner_tx {
                     stellar_base::xdr::FeeBumpTransactionInnerTx::Tx(v1) => {

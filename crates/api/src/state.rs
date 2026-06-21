@@ -6,6 +6,7 @@ use base64::Engine;
 use octo_crypto::{master_key_from_slice, MASTER_KEY_LEN};
 use octo_store::Store;
 use octo_wallet_core::StellarNetwork;
+use octo_webhooks::WebhookSender;
 use std::sync::Arc;
 use zeroize::Zeroizing;
 
@@ -26,6 +27,8 @@ struct Inner {
     friendbot_url: Option<String>,
     /// HMAC secret for signing dashboard auth JWTs.
     jwt_secret: Vec<u8>,
+    /// Fires signed webhooks (e.g. `transaction.sponsored`) to registered endpoints.
+    webhooks: WebhookSender,
 }
 
 impl AppState {
@@ -68,6 +71,7 @@ impl AppState {
         jwt_secret: Vec<u8>,
     ) -> Self {
         let horizon = Horizon::new(horizon_url.clone());
+        let webhooks = WebhookSender::new(store.clone());
         Self {
             inner: Arc::new(Inner {
                 store,
@@ -77,6 +81,7 @@ impl AppState {
                 horizon_url,
                 friendbot_url,
                 jwt_secret,
+                webhooks,
             }),
         }
     }
@@ -108,6 +113,10 @@ impl AppState {
 
     pub fn horizon(&self) -> &Horizon {
         &self.inner.horizon
+    }
+
+    pub fn webhooks(&self) -> &WebhookSender {
+        &self.inner.webhooks
     }
 
     pub fn horizon_url(&self) -> &str {

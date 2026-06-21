@@ -66,6 +66,9 @@ impl From<octo_store::StoreError> for ApiError {
         match e {
             octo_store::StoreError::Conflict => ApiError::Conflict,
             octo_store::StoreError::NotFound => ApiError::NotFound,
+            octo_store::StoreError::BudgetExceeded => {
+                ApiError::TooManyRequests("daily sponsorship budget exceeded".into())
+            }
             // Database/migration errors are logged by the caller; never echoed.
             _ => ApiError::Internal,
         }

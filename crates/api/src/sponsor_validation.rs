@@ -9,7 +9,11 @@ use stellar_base::xdr::{MuxedAccount, OperationBody, TransactionEnvelope, XDRDes
 use stellar_strkey::ed25519::PublicKey as StrkeyPK;
 
 /// Operation types that are permitted inside a sponsored fee-bump transaction.
-const ALLOWED_OP_TYPES: &[&str] = &["Payment", "PathPaymentStrictSend", "PathPaymentStrictReceive"];
+const ALLOWED_OP_TYPES: &[&str] = &[
+    "Payment",
+    "PathPaymentStrictSend",
+    "PathPaymentStrictReceive",
+];
 
 /// Parse `inner_xdr` and reject any operation not in [`ALLOWED_OP_TYPES`] or where the inner
 /// transaction's source account is the same as `master_account_g`.
@@ -40,7 +44,7 @@ pub fn validate_inner_xdr(inner_xdr: &str, master_account_g: &str) -> Result<(),
         if !is_op_allowed(&op.body) {
             let name = op_type_name(&op.body);
             return Err(ApiError::BadRequest(format!(
-                "operation type '{name}' is not allowed in a sponsored transaction; \
+                "op_not_allowed: operation type '{name}' is not allowed in a sponsored transaction; \
                  allowed types: {}",
                 ALLOWED_OP_TYPES.join(", ")
             )));

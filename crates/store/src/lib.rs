@@ -594,7 +594,7 @@ impl Store {
     pub async fn sum_sponsored_fees_today(&self, wallet_id: Uuid) -> Result<i64, StoreError> {
         let total: i64 = sqlx::query_scalar(
             r#"
-            SELECT COALESCE(SUM(fee_stroops), 0)
+            SELECT COALESCE(SUM(fee_stroops), 0)::bigint
             FROM sponsored_transactions
             WHERE wallet_id = $1
               AND status = 'confirmed'
@@ -606,6 +606,116 @@ impl Store {
         .fetch_one(&self.pool)
         .await?;
         Ok(total)
+    }
+
+    /// Sum reserved fees (non-failed rows) for the current UTC day — used when displaying spend.
+    pub async fn sum_sponsored_fees_reserved_today(
+        &self,
+        wallet_id: Uuid,
+    ) -> Result<i64, StoreError> {
+        let total: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COALESCE(SUM(fee_stroops), 0)::bigint
+            FROM sponsored_transactions
+            WHERE wallet_id = $1
+              AND status <> 'failed'
+              AND date_trunc('day', created_at AT TIME ZONE 'UTC') =
+                  date_trunc('day', now() AT TIME ZONE 'UTC')
+            "#,
+        )
+        .bind(wallet_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(total)
+    }
+
+    /// Create or update gas sponsorship config for a wallet.
+    pub async fn upsert_gas_sponsorship_config(
+        &self,
+        wallet_id: Uuid,
+        enabled: bool,
+        per_tx_fee_cap_stroops: Option<i64>,
+        daily_budget_stroops: Option<i64>,
+    ) -> Result<GasSponsorshipConfig, StoreError> {
+        sqlx::query_as::<_, GasSponsorshipConfig>(
+            r#"
+            INSERT INTO gas_sponsorship_configs
+                (wallet_id, enabled, per_tx_fee_cap_stroops, daily_budget_stroops)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (wallet_id) DO UPDATE SET
+                enabled = EXCLUDED.enabled,
+                per_tx_fee_cap_stroops = EXCLUDED.per_tx_fee_cap_stroops,
+                daily_budget_stroops = EXCLUDED.daily_budget_stroops,
+                updated_at = now()
+            RETURNING *
+            "#,
+        )
+        .bind(wallet_id)
+        .bind(enabled)
+        .bind(per_tx_fee_cap_stroops)
+        .bind(daily_budget_stroops)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(StoreError::from)
+    }
+
+    /// Return true when a sponsored-transaction row already exists for `inner_tx_hash`.
+    pub async fn sponsored_tx_exists(&self, inner_tx_hash: &str) -> Result<bool, StoreError> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sponsored_transactions WHERE inner_tx_hash = $1)",
+        )
+        .bind(inner_tx_hash)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists)
+    }
+
+    /// Atomically check the daily sponsorship budget and reserve it in one statement.
+    ///
+    /// Returns `Ok(None)` when the budget would be exceeded or `inner_tx_hash` was already recorded
+    /// (`ON CONFLICT DO NOTHING`). Callers distinguish duplicate vs budget via
+    /// [`Self::sponsored_tx_exists`].
+    pub async fn record_sponsored_tx_if_budget_available(
+        &self,
+        wallet_id: Uuid,
+        inner_tx_hash: &str,
+        fee_stroops: i64,
+        daily_budget_stroops: i64,
+    ) -> Result<Option<SponsoredTransaction>, StoreError> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))")
+            .bind(wallet_id)
+            .execute(&mut *tx)
+            .await?;
+
+        let row = sqlx::query_as::<_, SponsoredTransaction>(
+            r#"
+            WITH budget_check AS (
+                SELECT COALESCE(SUM(fee_stroops), 0)::bigint AS spent_today
+                FROM sponsored_transactions
+                WHERE wallet_id = $1
+                  AND status <> 'failed'
+                  AND date_trunc('day', created_at AT TIME ZONE 'UTC') =
+                      date_trunc('day', now() AT TIME ZONE 'UTC')
+            )
+            INSERT INTO sponsored_transactions (wallet_id, inner_tx_hash, fee_stroops, status)
+            SELECT $1, $2, $3, 'pending'
+            FROM budget_check
+            WHERE spent_today + $3 <= $4
+            ON CONFLICT (inner_tx_hash) DO NOTHING
+            RETURNING *
+            "#,
+        )
+        .bind(wallet_id)
+        .bind(inner_tx_hash)
+        .bind(fee_stroops)
+        .bind(daily_budget_stroops)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(row)
     }
 
     /// Record a webhook delivery attempt (audit log). Returns the delivery id.
