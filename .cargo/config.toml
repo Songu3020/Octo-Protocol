@@ -2,3 +2,6 @@
 # This stops the resolver from selecting crates that require edition2024 / a newer Rust.
 [resolver]
 incompatible-rust-versions = "fallback"
+
+[build]
+target = "x86_64-pc-windows-msvc"
