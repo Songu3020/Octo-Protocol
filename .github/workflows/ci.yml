@@ -40,7 +40,18 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        # SHA-pin to v2.9.1 (was @v2 — a moving major tag, so the action's behaviour
+        # could drift between runs). cache-on-failure: false prevents the cache layer
+        # from persisting a poisoned rustup state after a job failure, which was the
+        # suspected vector behind PR #35's persistent `target triple in channel name`
+        # failures on a clean second run. shared-cache: true lets PR builds reuse the
+        # main-branch cache so the warm cache starts from a known-good baseline rather
+        # than a per-PR reproduction.
+        # Supersedes part of #34 / #35; closes Octo-Protocol-org/Octo-Protocol#33.
+        uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
+        with:
+          cache-on-failure: false
+          shared-cache: true
 
       - name: Format check
         run: cargo fmt --all -- --check
