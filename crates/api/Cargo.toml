@@ -33,8 +33,6 @@ rand.workspace = true
 hmac.workspace = true
 sha2.workspace = true
 hex.workspace = true
-stellar-base.workspace = true
-stellar-strkey.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
@@ -42,5 +40,4 @@ tower.workspace = true
 sqlx.workspace = true
 stellar-base.workspace = true
 dotenvy = "0.15"
-stellar-base.workspace = true
 reqwest.workspace = true

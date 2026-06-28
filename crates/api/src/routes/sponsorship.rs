@@ -37,7 +37,7 @@ pub async fn get_config(
     let config = state.store().get_gas_sponsorship_config(wallet_id).await?;
     let spent_today = state
         .store()
-        .sum_sponsored_fees_reserved_today(wallet_id)
+        .sum_sponsored_fees_today(wallet_id)
         .await
         .map_err(|_| ApiError::Internal)?;
 
@@ -97,7 +97,7 @@ pub async fn put_config(
 
     let spent_today = state
         .store()
-        .sum_sponsored_fees_reserved_today(wallet_id)
+        .sum_sponsored_fees_today(wallet_id)
         .await
         .map_err(|_| ApiError::Internal)?;
 

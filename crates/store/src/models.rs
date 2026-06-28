@@ -129,11 +129,34 @@ pub struct SponsoredTransaction {
     pub id: Uuid,
     pub wallet_id: Uuid,
     pub inner_tx_hash: String,
-    pub fee_bump_tx_hash: String,
+    /// Hash of the outer fee-bump tx; `None` until/unless submission succeeds.
+    pub fee_bump_tx_hash: Option<String>,
     pub fee_stroops: i64,
     pub status: String,
+    /// Horizon error detail on failure; ops-only, never returned to callers.
     pub error: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+/// A new sponsored transaction to record (inserted as `pending`).
+#[derive(Debug, Clone)]
+pub struct NewSponsoredTx<'a> {
+    pub wallet_id: Uuid,
+    pub inner_tx_hash: &'a str,
+    pub fee_stroops: i64,
+}
+
+/// The gas-sponsorship config for a wallet (one row per wallet).
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct GasSponsorshipConfig {
+    pub wallet_id: Uuid,
+    pub enabled: bool,
+    /// Max fee (stroops) the sponsor pays per transaction; `None` = no cap.
+    pub per_tx_fee_cap_stroops: Option<i64>,
+    /// Rolling UTC-day budget (stroops); `None` = no budget limit.
+    pub daily_budget_stroops: Option<i64>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 /// A new deposit to record (input to the idempotent insert).

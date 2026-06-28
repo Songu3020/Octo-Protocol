@@ -670,7 +670,7 @@ async fn insert_sponsored_tx(
     let id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO sponsored_transactions (id, wallet_id, inner_tx_hash, fee_bump_tx_hash, fee_stroops, status)
-         VALUES ($1, $2::uuid, $3, $4, $5, $6)",
+         VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6)",
     )
     .bind(&id)
     .bind(wallet_id)
@@ -741,7 +741,9 @@ async fn list_sponsored_transactions_pagination() {
 
     loop {
         let uri = match cursor {
-            Some(ref c) => format!("/v1/wallets/{wallet_id}/sponsored-transactions?limit=3&before={c}"),
+            Some(ref c) => {
+                format!("/v1/wallets/{wallet_id}/sponsored-transactions?limit=3&before={c}")
+            }
             None => format!("/v1/wallets/{wallet_id}/sponsored-transactions?limit=3"),
         };
         let resp = app.clone().oneshot(get_auth(&uri, &token)).await.unwrap();
@@ -758,7 +760,11 @@ async fn list_sponsored_transactions_pagination() {
         cursor = next;
     }
 
-    assert_eq!(all_ids.len(), 10, "all 10 rows must be retrieved across pages");
+    assert_eq!(
+        all_ids.len(),
+        10,
+        "all 10 rows must be retrieved across pages"
+    );
     // Verify no duplicates.
     let mut unique = all_ids.clone();
     unique.sort();

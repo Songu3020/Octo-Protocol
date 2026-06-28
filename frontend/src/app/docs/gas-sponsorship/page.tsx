@@ -68,7 +68,7 @@ export default function GasSponsorship() {
             desc: "Turn sponsorship on or off for this wallet.",
           },
           {
-            name: "max_fee_per_tx_stroops",
+            name: "per_tx_fee_cap_stroops",
             type: "integer",
             desc: "Maximum fee (in stroops) the master wallet will pay per sponsored transaction. Must be ≤ daily_budget_stroops. Defaults to 100\u202f000 (0.01 XLM) if omitted.",
           },
@@ -85,7 +85,7 @@ export default function GasSponsorship() {
   -H "content-type: application/json" \\\\
   -d '{
     "enabled": true,
-    "max_fee_per_tx_stroops": 100000,       // 0.01 XLM
+    "per_tx_fee_cap_stroops": 100000,       // 0.01 XLM
     "daily_budget_stroops": 50000000        // 5 XLM
   }'`}</Code>
 
@@ -95,7 +95,7 @@ export default function GasSponsorship() {
   "data": {
     "wallet_id": "52775…",
     "enabled": true,
-    "max_fee_per_tx_stroops": 100000,       // 0.01 XLM
+    "per_tx_fee_cap_stroops": 100000,       // 0.01 XLM
     "daily_budget_stroops": 50000000,       // 5 XLM
     "created_at": "2026-06-15T10:30:00Z",
     "updated_at": "2026-06-15T12:45:00Z"
@@ -103,8 +103,10 @@ export default function GasSponsorship() {
 }`}</Code>
 
       <p>
-        Defaults before any config is set: <strong>disabled</strong>, 100 000
-        stroops per-tx cap, 100 000 000 stroops daily budget.
+        Before any config is saved a wallet is <strong>disabled</strong> with{" "}
+        <strong>no caps</strong> (both <code>per_tx_fee_cap_stroops</code> and{" "}
+        <code>daily_budget_stroops</code> are <code>null</code>). Set them
+        explicitly to bound spend.
       </p>
 
       <h2>Read current config</h2>
@@ -123,7 +125,7 @@ export default function GasSponsorship() {
   "data": {
     "wallet_id": "52775…",
     "enabled": true,
-    "max_fee_per_tx_stroops": 100000,       // 0.01 XLM
+    "per_tx_fee_cap_stroops": 100000,       // 0.01 XLM
     "daily_budget_stroops": 50000000,       // 5 XLM
     "created_at": "2026-06-15T10:30:00Z",
     "updated_at": "2026-06-15T12:45:00Z"
@@ -251,7 +253,7 @@ export default function GasSponsorship() {
       </p>
       <ul>
         <li>
-          <strong>Per-transaction fee cap</strong> (<code>max_fee_per_tx_stroops</code>)
+          <strong>Per-transaction fee cap</strong> (<code>per_tx_fee_cap_stroops</code>)
           — the most the master wallet will ever pay for a single fee-bump. Set
           it low enough that a burst of sponsor requests can&apos;t drain your
           wallet in one go.
